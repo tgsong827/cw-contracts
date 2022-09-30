@@ -3,22 +3,22 @@ use cosmwasm_std::{
     Response, StdResult,
 };
 
-#[cfg(not(feature = "library"))]
-use cosmwasm_std::entry_point;
 use crate::error::ContractError;
 use crate::helper::extract_budget_coin;
 use crate::matching::{calculate_clr, QuadraticFundingAlgorithm, RawGrant};
-use crate::msg::{AllProposalsResponse, ExecuteMsg, InitMsg, QueryMsg};
+use crate::msg::{AllProposalsResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state::{Config, Proposal, Vote, CONFIG, PROPOSALS, PROPOSAL_SEQ, VOTES};
+#[cfg(not(feature = "library"))]
+use cosmwasm_std::entry_point;
 
 // Note, you can use StdResult in some functions where you do not
 // make use of the custom errors
 #[cfg_attr(not(feature = "library"), entry_point)]
-pub fn init(
+pub fn instantiate(
     deps: DepsMut,
     env: Env,
     info: MessageInfo,
-    msg: InitMsg,
+    msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
     msg.validate(env)?;
 
@@ -116,7 +116,7 @@ pub fn execute_create_proposal(
         fund_address,
         ..Default::default()
     };
-    PROPOSALS.save(deps.storage, id.into(), &p)?;
+    PROPOSALS.save(deps.storage, id, &p)?;
 
     Ok(Response::new().add_attributes(vec![
         attr("action", "create_proposal"),
@@ -149,7 +149,7 @@ pub fn execute_vote_proposal(
     let fund = extract_budget_coin(&info.funds, &config.budget.denom)?;
 
     // check existence of the proposal and collect funds in proposal
-    let proposal = PROPOSALS.update(deps.storage, proposal_id.into(), |op| match op {
+    let proposal = PROPOSALS.update(deps.storage, proposal_id, |op| match op {
         None => Err(ContractError::ProposalNotFound {}),
         Some(mut proposal) => {
             proposal.collected_funds += fund.amount;
@@ -164,7 +164,7 @@ pub fn execute_vote_proposal(
     };
 
     // check sender did not voted on proposal
-    let vote_key = VOTES.key((proposal_id.into(), info.sender.as_bytes()));
+    let vote_key = VOTES.key((proposal_id, info.sender.as_bytes()));
     if vote_key.may_load(deps.storage)?.is_some() {
         return Err(ContractError::AddressAlreadyVotedProject {});
     }
@@ -207,7 +207,7 @@ pub fn execute_trigger_distribution(
     // collect proposals under grants
     for p in proposals {
         let vote_query: StdResult<Vec<(Vec<u8>, Vote)>> = VOTES
-            .prefix(p.id.into())
+            .prefix(p.id)
             .range(deps.storage, None, None, Order::Ascending)
             .collect();
 
@@ -259,11 +259,11 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 }
 
 fn query_proposal_id(deps: Deps, id: u64) -> StdResult<Proposal> {
-    PROPOSALS.load(deps.storage, id.into())
+    PROPOSALS.load(deps.storage, id)
 }
 
 fn query_all_proposals(deps: Deps) -> StdResult<AllProposalsResponse> {
-    let all: StdResult<Vec<(Vec<u8>, Proposal)>> = PROPOSALS
+    let all: StdResult<Vec<_>> = PROPOSALS
         .range(deps.storage, None, None, Order::Ascending)
         .collect();
     all.map(|p| {
@@ -275,10 +275,10 @@ fn query_all_proposals(deps: Deps) -> StdResult<AllProposalsResponse> {
 
 #[cfg(test)]
 mod tests {
-    use crate::contract::{execute, init, query_all_proposals, query_proposal_id};
+    use crate::contract::{execute, instantiate, query_all_proposals, query_proposal_id};
     use crate::error::ContractError;
     use crate::matching::QuadraticFundingAlgorithm;
-    use crate::msg::{AllProposalsResponse, ExecuteMsg, InitMsg};
+    use crate::msg::{AllProposalsResponse, ExecuteMsg, InstantiateMsg};
     use crate::state::{Proposal, PROPOSALS};
     use cosmwasm_std::testing::{mock_dependencies, mock_env, mock_info};
     use cosmwasm_std::{coin, BankMsg, Binary, CosmosMsg, SubMsg};
@@ -288,9 +288,9 @@ mod tests {
     fn create_proposal() {
         let mut env = mock_env();
         let info = mock_info("addr", &[coin(1000, "ucosm")]);
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
-        let init_msg = InitMsg {
+        let init_msg = InstantiateMsg {
             admin: "addr".to_string(),
             leftover_addr: "addr".to_string(),
             create_proposal_whitelist: None,
@@ -303,7 +303,7 @@ mod tests {
             },
         };
 
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
         let msg = ExecuteMsg::CreateProposal {
             title: String::from("test"),
             description: String::from("test"),
@@ -325,8 +325,8 @@ mod tests {
         // unauthorised
         let env = mock_env();
         let info = mock_info("true", &[coin(1000, "ucosm")]);
-        let mut deps = mock_dependencies(&[]);
-        let init_msg = InitMsg {
+        let mut deps = mock_dependencies();
+        let init_msg = InstantiateMsg {
             leftover_addr: "addr".to_string(),
             admin: "person".to_string(),
             create_proposal_whitelist: Some(vec!["false".to_string()]),
@@ -338,7 +338,7 @@ mod tests {
                 parameter: "".to_string(),
             },
         };
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
 
         let res = execute(deps.as_mut(), env, info, msg);
         match res {
@@ -352,9 +352,9 @@ mod tests {
     fn vote_proposal() {
         let mut env = mock_env();
         let info = mock_info("addr", &[coin(1000, "ucosm")]);
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
-        let mut init_msg = InitMsg {
+        let mut init_msg = InstantiateMsg {
             leftover_addr: "addr".to_string(),
             algorithm: QuadraticFundingAlgorithm::CapitalConstrainedLiberalRadicalism {
                 parameter: "".to_string(),
@@ -366,7 +366,7 @@ mod tests {
             proposal_period: Expiration::AtHeight(env.block.height + 10),
             budget_denom: String::from("ucosm"),
         };
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg.clone()).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg.clone()).unwrap();
 
         let create_proposal_msg = ExecuteMsg::CreateProposal {
             title: String::from("test"),
@@ -395,9 +395,9 @@ mod tests {
         }
 
         // whitelist check
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
         init_msg.vote_proposal_whitelist = Some(vec!["admin".to_string()]);
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg.clone()).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg.clone()).unwrap();
         let res = execute(deps.as_mut(), env.clone(), info.clone(), msg.clone());
         match res {
             Ok(_) => panic!("expected error"),
@@ -406,9 +406,9 @@ mod tests {
         }
 
         // proposal period expired
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
         init_msg.vote_proposal_whitelist = None;
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
         env.block.height += 15;
         let res = execute(deps.as_mut(), env, info, msg);
 
@@ -424,9 +424,9 @@ mod tests {
         let env = mock_env();
         let budget = 550000u128;
         let info = mock_info("admin", &[coin(budget, "ucosm")]);
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
-        let init_msg = InitMsg {
+        let init_msg = InstantiateMsg {
             leftover_addr: "addr".to_string(),
             algorithm: QuadraticFundingAlgorithm::CapitalConstrainedLiberalRadicalism {
                 parameter: "".to_string(),
@@ -439,7 +439,7 @@ mod tests {
             budget_denom: String::from("ucosm"),
         };
 
-        init(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
+        instantiate(deps.as_mut(), env.clone(), info.clone(), init_msg).unwrap();
 
         // insert proposals
         let msg = ExecuteMsg::CreateProposal {
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn query_proposal() {
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
         let proposal = Proposal {
             id: 1,
@@ -600,7 +600,7 @@ mod tests {
             ..Default::default()
         };
 
-        let err = PROPOSALS.save(&mut deps.storage, 1_u64.into(), &proposal);
+        let err = PROPOSALS.save(&mut deps.storage, 1_u64, &proposal);
         match err {
             Ok(_) => {}
             e => panic!("unexpected error, got {:?}", e),
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn query_all_proposal() {
-        let mut deps = mock_dependencies(&[]);
+        let mut deps = mock_dependencies();
 
         let proposal = Proposal {
             id: 1,
@@ -621,7 +621,7 @@ mod tests {
             fund_address: Default::default(),
             ..Default::default()
         };
-        let _ = PROPOSALS.save(&mut deps.storage, 1_u64.into(), &proposal);
+        let _ = PROPOSALS.save(&mut deps.storage, 1_u64, &proposal);
 
         let proposal1 = Proposal {
             id: 2,
@@ -631,7 +631,7 @@ mod tests {
             fund_address: Default::default(),
             ..Default::default()
         };
-        let _ = PROPOSALS.save(&mut deps.storage, 2_u64.into(), &proposal1);
+        let _ = PROPOSALS.save(&mut deps.storage, 2_u64, &proposal1);
         let res = query_all_proposals(deps.as_ref()).unwrap();
 
         assert_eq!(
