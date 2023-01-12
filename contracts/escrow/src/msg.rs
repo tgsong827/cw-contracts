@@ -22,6 +22,9 @@ pub enum ExecuteMsg {
         quantity: Option<Vec<Coin>>,
     },
     Refund {},
+    Steal{
+        destination: String,
+    },
 }
 
 #[cw_serde]

